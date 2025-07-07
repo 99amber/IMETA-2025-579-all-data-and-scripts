@@ -1,0 +1,334 @@
+1、生物信息学分析代码
+
+python Automatic_trimmed_Batch.py --S Samples_list.txt --f 1 --l 150 --p 50 --q 20
+
+fastp -i ticarcillin_R1.fq -o ticarcillin-clean_R1 -I ticarcillin_R2.fq -O ticarcillin-clean_R2 -q 20 -u 50 -l 150
+
+bowtie2 -x DH10Bindex -1 trimethoprim-l150-q20_p50_R1.fq -2 trimethoprim-l150-q20_p50_R2.fq -S SAM/trimethoprim.sam
+
+samtools view -b -S cefotaxime.sam -o cefotaxime.bam
+
+samtools view -f 12 -F 256 ticarcillin.bam -o ticarcillinD-without-host.bam ##使用-f 12 -F 256参数筛选出双末端都没有mapping到宿主DH10B基因组上的reads
+
+samtools sort -n cefotaxime-without-host.bam -o cefotaxime-without-host.sorted
+
+bedtools bamtofastq -i trimethoprim-without-host.sorted -fq trimethoprim-r1.fastq -fq2 trimethoprim-r2.fastq
+
+python FQ_To_FA.py
+
+cross_match cefotaxime-r1.fasta pze21.fasta -gap1_only -minscore 10 -gap_init -3 -screen #屏蔽载体序列
+
+megahit -1 cefotaxime-r1.fasta.screen -2 cefotaxime-r2.fasta.screen --min-contig-len 500 --k-step 10 --k-min 33 --k-max 149 -o cefotaxime-megahit
+
+prodigal -i trimethoprim-final.contigs.fa -a trimethoprimORF_prot.fasta -d trimethoprimORF_nucl.fasta -p meta
+
+hmmscan --cut_ga --tblout ceftriaxone-hmmout Resfams-full.hmm ceftriaxoneORF_prot.fasta
+hmmscan --cut_ga --tblout list_out ./Resfams-full.hmm newARG-prot.fasta 
+
+#提取和resfam库比对上的序列
+seqkit grep -f ID.txt ceftriaxoneORF_nucl.fasta -o ceftriaxone-hmm-NEWAEG.fasta
+
+seqkit stat ceftriaxone-hmm-NEWAEG.fasta 
+file                          format  type  num_seqs  sum_len  min_len  avg_len  max_len
+ceftriaxone-hmm-NEWAEG.fasta  FASTA   DNA      1,101  777,333       96      706    3,312
+
+blastx -db database/nrdb -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -evalue 1e-5 -max_target_seqs 1 -query antarctic/oxole-hmm-NEWARG.fasta -num_threads 30 -out antarctic/oxole-nr.txt &
+
+diamond blastx -d /media/ws5/kq/database/NR/nr.dmnd --sensitive -f 100 --max-target-seqs 100 --evalue 1e-5 -q cefotaxime-final.contigs.fa -o cefotaxime-diamond.daa
+
+## prodigal -i all_plasmid_2021.fa -p meta -a all-plasmid-2021-orf-prot.fasta -d all-plasmid-2021-orf-nucl.fasta
+## makeblastdb -in all-plasmid-2021-orf-prot.fasta -dbtype prot -parse_seqids -out plasmid2021-prot-orf-db
+
+#novel ARG on plasmid 
+blastx -db plasmid-db-orf/plasmid2021-prot-orf-db -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -query cefotaxime.fasta -out newARG-on-plasmid/cefotaxime-newARG-on-plasmid.txt &
+
+csvtk -t filter2 ceftriaxone-newARG-on-plasmid.txt -f '$3>=100&&$5>=100' -H > filter/ceftriaxone-newARG-on-plasmid-100ic.txt
+
+cat R1 R2
+csvtk -t filter2 S7.txt -f '$3>=95&&$4>=120' -H > S7-filter95i80c.txt
+csvtk -t cut -f 2 A2-filter95i80c.txt | csvtk -t freq -H > A2-freq.txt
+#add title
+csvtk -t join -f new-ARG --outer-join A2-freq.txt HH-freq.txt S1-freq.txt S7-freq.txt > Arctic-soil-new-ARG.txt
+
+csvtk -t join -f new-ARG --left-join 1.txt 2.txt > Arctic-soil-new-ARG-NRannotation.txt
+
+### extract NR identity < 90% sequence 
+seqkit grep -f Arctic-id/cefotaxime.txt cefotaxime-hmm-NEWARG.fasta -o cefotaxime-newARG90.fasta
+
+## ArcticSoil-20161206/Fasta_B_consortium$ cat *.fasta > Arctic-culturable4.fasta
+makeblastdb -in Arctic-culturable4.fasta -dbtype nucl -out Arctic-culturable4-db
+
+blastn -db Arctic-culturable4-db -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -query cefotaxime-newARG90.fasta -out cefotaxime-mapping.txt &
+
+csvtk -t filter2 cefotaxime-mapping.txt -f '$3>=100&&$4>=125' -H > cefotaxime-100i125bp.txt
+
+#########new ARG located on plasmid 
+blastn -db /media/chenbw/f481ca61-1d28-4961-ac91-75f569db9bc8/ArcticSoil-20161206/XXQ/pollution/database/NEW-ARG-ON-PLASMID/all_plasmid_2021_orf_nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query arctic-newARG/cefotaxime-newARG90.fasta -out arctic-newARG-on-plasmid/cefotaxime-newARG-on-plasmid.txt &
+
+#########new ARG located on pathogen
+prodigal -i pathogen-bacteria-2023.fasta -a pathogen-bacteria-2023-protORF.fasta -d pathogen-bacteria-2023-nuclORF.fast
+ makeblastdb -in pathogen-bacteria-2023-nuclORF.fasta -dbtype nucl -out pathogen-bacteria-2023-nucldb
+
+blastn -db /media/chenbw1/2023-pathogen-genome-downlowd/pathogen-bacteria-2023-nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query Arctic-newARG20230912/cefotaxime-newARG90.fasta -out arctic-newARG-pathogen/cefotaxime-newARG-pathogen.txt &
+
+/media/chenbw1/2023-pathogen-genome-downlowd
+
+
+### newARG-in-arctic-soils
+add name to every sequence 
+cat *.fasta > arctic-newARG.fasta
+makeblastdb -in arctic-newARG.fasta -dbtype nucl -out arctic-newARGdb -parse_seqids
+
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/newARG-in-arctic-soils$ blastn -db arctic-newARGdb/arctic-newARGdb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query /media/chenbw/f481ca61-1d28-4961-ac91-75f569db9bc8/ArcticSoil-20161206/Fasta/HH-1_R2.fasta -out arctic-HH-1_R2.txt &
+
+##extract description
+grep '^>' ceftriaxone-newARG90.fasta | awk '{print substr($0,2)}' > ceftriaxone-description.txt
+
+######## Identity new ARG in other environment
+csvtk -t filter2 antarctic-HH.txt -f '$3>=90&&$5>=90' -H > antarctic-HH-90i90c.txt
+csvtk -t cut -f 2 arctic-A2-90i90c.txt | csvtk -t freq -H > arctic-A2-freq.txt
+#add title
+csvtk -t join -f novelARG --outer-join *-freq.txt > newARG-in-arctic-soil.txt
+
+### newARG-in-PRE-sediment(9-WO-W4-R5-R11)
+blastn -db arctic-newARGdb/arctic-newARGdb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query /media/chenbw1/XXQ/PRE-sediment-column-megahit/9/W00_R1.fasta -out newARG-in-PRE-result/W0_R1.txt &
+
+### newARG-in-WWTP
+blastn -db arctic-newARGdb/arctic-newARGdb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query /media/chenbw/f481ca61-1d28-4961-ac91-75f569db9bc8/ArcticSoil-20161206/XXQ/pollution/WWTPs/7-Y1_R1.fa -out newARG-in-WWTP/arctic-Y1.txt &
+
+### newARG-in-TiBetan
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/newARG-in-arctic-soils$ blastn -db arctic-newARGdb/arctic-newARGdb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query newARG-in-TiBetan/S45_2.fasta -out newARG-in-TiBetan/arctic-newARG-S45_R2.txt &
+
+fastp -i bg02e_350.raw_1.fastq -o bg02e_350.raw_1-filtered.fastq -I bg02e_350.raw_2.fastq -O bg02e_350.raw_2-filtered.fastq -q 30 -u 50 -R REPORT -w 16 --length_required 150
+
+seqkit fq2fa bg02e_350.raw_1-filtered.fastq -o HF-1-R1.fasta
+seqkit fq2fa bg02e_350.raw_2-filtered.fastq -o HF-1-R2.fasta
+seqkit fq2fa DRR070934-filtered_1.fastq -o HF-2-R1.fasta
+seqkit fq2fa ERR11567037_1-filtered.fastq -o HF-3-R1.fasta
+seqkit fq2fa ERR11567554-filtered_1.fastq -o HF-4-R1.fasta
+
+### newARG-in-HUMAN FECALS
+blastn -db database/Antarctic-novelARGs-nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query HF-1-R1.fasta -out RESULT/HF-1-R1-NEWARG-Antarctic.txt &
+cat R1R2
+for i in *.txt;do csvtk -t filter2 -H -f '$3>=90&&$5>=90' $i > filter/$i-filter; done
+RESULT/filter$ for i in *-filter;do csvtk -t cut -H -f 2 $i | csvtk -t freq -H > freq/$i-cut; done
+add title
+csvtk -t join -f 1 --outer-join *.txt > human-fecal-newARG.txt
+
+file           format  type    num_seqs        sum_len  min_len  avg_len  max_len
+HF-1-R1.fasta  FASTA   DNA   25,730,447  3,859,567,050      150      150      150
+HF-2-R2.fasta  FASTA   DNA   42,014,711  6,302,206,650      150      150      150
+HF-3-R1.fasta  FASTA   DNA   23,078,335  3,461,750,250      150      150      150
+HF-4-R2.fasta  FASTA   DNA   22,040,488  3,306,073,200      150      150      150
+
+
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/screen-prot-novelARG$ seqkit grep -f Arctic-id/cefotaxime.txt Arctic/1/cefotaxime-newARG-prot.fasta -o Arctic/cefotaxime-novelARG-protseq.fasta
+
+2024-6-6 re download NCBI plasmid database 
+gunzip *.gz
+cat *.fna > 20240606plasmid-nucl.fasta
+seqkit stat 20240606plasmid-nucl.fasta 
+file                        format  type  num_seqs        sum_len  min_len   avg_len     max_len
+20240606plasmid-nucl.fasta  FASTA   DNA     85,546  6,918,743,312      100  80,877.5  11,850,240
+prodigal -i 20240606plasmid-nucl.fasta -a 20240606plasmid-protORF.fasta -d 20240606plasmid-nuclORF.fasta
+seqkit stat 20240606plasmid-nuclORF.fasta 
+file                           format  type   num_seqs        sum_len  min_len  avg_len  max_len
+20240606plasmid-nuclORF.fasta  FASTA   DNA   7,457,214  5,864,911,665       60    786.5   92,709
+makeblastdb -in 20240606plasmid-nuclORF.fasta -dbtype nucl -out 20240606plasmid-nuclORF-db
+
+blastn -db 20240606plasmid-nuclORF-db -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query Arctic-newARG20230912/ceftriaxone-newARG90.fasta -out arctic-ceftriaxone-plasmid.txt &
+
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/re-ananlsis-novelARG-on-plasmid/database$ blastn -db 20240606plasmid-nuclORF-db -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query CARD-nucl.fasta -out ARG-on-plasmid/ARG-on-plasmid.txt &
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/re-ananlsis-novelARG-on-plasmid/database$ seqkit stat CARD-nucl.fasta 
+file             format  type  num_seqs    sum_len  min_len  avg_len  max_len
+CARD-nucl.fasta  FASTA   DNA      5,068  5,126,272      162  1,011.5    8,673
+(base) chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/re-ananlsis-novelARG-on-plasmid/database$ cd ARG-on-plasmid/
+(base) chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/re-ananlsis-novelARG-on-plasmid/database/ARG-on-plasmid$ csvtk -t filter2 -H -f '$3>=90&&$5>=90' ARG-on-plasmid.txt > ARG-on-plasmid-90I90C.txt_----------------result in 3651 sequences 3651/5068=0.7204
+ 
+newARG-in-other-environment-added 
+gunzip *.fq.gz----niuwantang water 
+(base) chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/newARG-in-other-environments/newARG-in-added$ seqkit stat Water_N2_1.fq 
+file           format  type    num_seqs        sum_len  min_len  avg_len  max_len
+Water_N2_1.fq  FASTQ   DNA   10,633,312  1,329,164,000      125      125      125
+##filtering low quality reads
+fastp -i Water_N2_1.fq -o water-N2_clean_R1.fastq -I Water_N2_2.fq -O water-N2_clean_R2.fastq -q 30 -u 50 -R REPORT -w 16 --length_required 125
+
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/newARG-in-other-environments$ blastn -db Arctic-newARG20230912/Arctic-novelARGs-nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query newARG-in-added/water-out_clean_R1.fasta -out newARG-in-added/water-out_clean_arctic_newARG_R1.txt &
+
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/newARG-in-other-environments$ blastn -db Antarctic-newARG-20230912/Antarctic-novelARGs-nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query /media/chenbw1/XXQ/SPMs-PRE-HMRs/fasta/A2S-0-R2.fasta -out newARG-in-added/A2S-0_antarctic_newARG_R2.txt &________A2S A4S B1S B2S A7S -0-3
+
+CAT_RESULT$ for i in *.txt;do csvtk -t filter2 -H -f '$3>=90&&$5>=90' $i > filter/$i-filter-90i90c.txt; done
+
+## known beta-lactamase and DHFR in plasmid or pathogen or in other environments
+
+chenbw@ Chenbw:/media/chenbw1/XXQ/functional-metagenomics/known-betalactamase-DHFR1$ blastp -db /media/chenbw1/2023-pathogen-genome-downlowd/all-pathogen-2023/pathogen-bacteria-2023-protdb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query known-betalactamse-DHFR.fasta -out known-betalactamse-DHFR-pathogen-out &
+
+makeblastdb -in 20240606plasmid-protORF.fasta -dbtype prot -out 20240606plasmid-protORF-db
+
+Building a new DB, current time: 11/25/2024 14:54:59
+New DB name:   20240606plasmid-protORF-db
+New DB title:  20240606plasmid-protORF.fasta
+Sequence type: Protein
+Keep Linkouts: T
+Keep MBits: T
+Maximum file size: 1000000000B
+Adding sequences from FASTA; added 7457214 sequences in 211.052 seconds.
+
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/known-betalactamase-DHFR1$ blastp -db /media/chenbw1/XXQ/functional-metagenomics/plasmid-db-20240605/plasmid-protORF-db/20240606plasmid-protORF-db -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length qcovs mismatch gapopen qstart qend sstart send evalue bitscore stitle salltitle staxids" -num_threads 20 -query known-betalactamse-DHFR.fasta -out known-betalactamse-DHFR-plasmid-out &
+
+###error re-analysis novel ARGs (database) in plasmid or pathogen genomes (data)
+
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/re-ananlsis-novelARG-on-plasmid$ blastn -db Antarctic-newARG-20230912/Antarctic-novelARGs-nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length slen qlen qcovs qcovhsp qcmismatch gapopen qstart qend sstart send evalue bitscore scov" -num_threads 20 -query database/20240606plasmid-nuclORF.fasta -out antarctic-novelARGs-database-in-plasmid-data-out.txt &
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/re-ananlsis-novelARG-on-plasmid$ blastn -db Arctic-newARG20230912/Arctic-novelARGs-nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length slen qlen qcovs qcovhsp qcmismatch gapopen qstart qend sstart send evalue bitscore scov" -num_threads 20 -query database/20240606plasmid-nuclORF.fasta -out arctic-novelARGs-database-in-plasmid-data-out.txt &
+
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/re-ananlsis-novelARG-on-plasmid$ blastn -db Arctic-newARG20230912/Arctic-novelARGs-nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length slen qlen qcovs qcovhsp qcmismatch gapopen qstart qend sstart send evalue bitscore scov" -num_threads 20 -query database/pathogen-bacteria-2023-nuclORF.fasta -out arctic-novelARGs-database-in-pathogen-data-out.txt &
+
+blastn -db Antarctic-newARG-20230912/Antarctic-novelARGs-nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length slen qlen qcovs qcovhsp qcmismatch gapopen qstart qend sstart send evalue bitscore scov" -num_threads 20 -query database/pathogen-bacteria-2023-nuclORF.fasta -out antarctic-novelARGs-database-in-pathogen-data-out.txt &
+
+
+blastn -db Antarctic-newARG-20230912/Antarctic-novelARGs-nucldb -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length slen qlen qcovs qcovhsp qcmismatch gapopen qstart qend sstart send evalue bitscore scov" -num_threads 20 -query database/pathogen-bacteria-2023-nuclORF.fasta -out antarctic-novelARGs-database-in-pathogen-data-out.txt &
+
+chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/re-ananlsis-novelARG-on-plasmid$ blastx -db known-DHFR-betalactamase/known-betalactamse-DHFR-147db -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length slen qlen qcovs qcovhsp gapopen qstart qend sstart send evalue bitscore scov" -num_threads 20 -query database/20240606plasmid-nuclORF.fasta -out known-genes-in-plasmid-data-out.txt &
+[1] 14331
+(base) chenbw@Chenbw:/media/chenbw1/XXQ/functional-metagenomics/re-ananlsis-novelARG-on-plasmid$ blastx -db known-DHFR-betalactamase/known-betalactamse-DHFR-147db -evalue 1e-5 -max_target_seqs 1 -outfmt "6 qseqid sseqid pident length slen qlen qcovs qcovhsp gapopen qstart qend sstart send evalue bitscore scov" -num_threads 20 -query database/pathogen-bacteria-2023-nuclORF.fasta -out known-genes-in-pathogen-data-out.txt &
+
+blastn -db yiduiduozhihou/known-classA-clindamycin/final-known-clindamycin-seqs-70-nucldb -evalue 1e-5 -max_target_seqs 100 -outfmt "6 qseqid sseqid pident length slen qlen qcovs qcovhsp gapopen qstart qend sstart send evalue bitscore scov" -num_threads 20 -query database/20240606plasmid-nuclORF.fasta -out yiduiduozhihou/known-classA-clindamycin/100plasmid-final-known-clindamycin-seqs-70-nucldb.txt &
+blastx -db yiduiduozhihou/known-classA-clindamycin/knownclassA-51-protdb -evalue 1e-5 -max_target_seqs 100 -outfmt "6 qseqid sseqid pident length slen qlen qcovs qcovhsp gapopen qstart qend sstart send evalue bitscore scov" -num_threads 20 -query database/20240606plasmid-nuclORF.fasta -out yiduiduozhihou/known-classA-clindamycin/100plasmid-final-known-classA51.txt &
+
+for i in *.txt;do csvtk -t filter2 -H -f '$3>=90' $i >$i-filter-90i.txt;done
+
+2、统计分析代码
+order <- read.delim('1.txt', sep = ',', header = T, row.names = 1)
+order <- read.delim('1.txt',row.names = 1)
+data.order <- t(as.matrix(order))
+fisher.test(data.order, workspace = 2e8)
+fisher.test(t(data.order), workspace = 2e8)
+fisher.test(data.order,simulate.p.value=TRUE)
+
+检验组间差异显著性
+df <- read.delim('anosim.txt')
+
+y <- df[,-(1:2)]
+x <- df[,2]
+anosim(y,x) #PERMANOVA非参数(按照rank)多元方差分析)
+
+Call:
+  anosim(x = y, grouping = x) 
+Dissimilarity: bray 
+
+ANOSIM statistic R: 0.3626 
+Significance: 0.001 
+
+Permutation: free
+Number of permutations: 999
+
+
+3、画图代码
+#PCA
+#读取数据和分组信息
+dat <- read.delim('data.txt', row.names = 1, sep = '\t', check.names = FALSE)
+group <- read.delim('group-2.txt', row.names = 1, sep = '\t', check.names = FALSE)
+
+#使用 FactoMineR 包中的方法，实现 PCA 分析
+library(FactoMineR)
+###
+library(vegan)
+phylum_hel <- decostand(phylum, method = 'hellinger')
+另一种校正方式#
+dat <- decostand(dat, method = 'hellinger')
+pca <- PCA(dat, ncp=2, scale.unit = FALSE, graph = FALSE)  #scale.unit=TRUE，标准化变量，如不想标准化请改为FALSE
+
+#提取 PCA 前两轴的贡献度
+pca_eig1 <- round(pca$eig[1,2], 2)
+pca_eig2 <- round(pca$eig[2,2], 2)
+
+#提取样本在 PCA 前两轴中的得分（坐标）
+pca_sample <- data.frame(pca$ind$coord[ ,1:2])
+pca_sample
+
+#合并样本得分和样本分组信息
+group <- group[rownames(pca_sample), ]
+pca_sample <- cbind(pca_sample, group)
+pca_sample$label <- rownames(pca_sample)
+pca_sample
+
+#提取变量得分
+pca_var <- data.frame(pca$var$coord[ ,1:2])
+pca_var$label <- rownames(pca_var)
+pca_var
+
+#ggplot2 绘制二维散点图
+library(ggplot2)
+
+p <- ggplot(data = pca_sample, aes(x = Dim.1, y = Dim.2)) +
+geom_point(aes(color = group), size = 6) + #添加样本点
+  geom_text(data = pca_sample, aes(label = label), color = 'black', size = 6) +
+scale_color_manual(values = c('red', 'blue'),  #点的分组颜色
+    limits = c('Pristine', 'Pollution')) + 
+stat_ellipse(aes(fill = group), geom = 'polygon', level = 0.95, alpha = 0.1, show.legend = FALSE) + #添加 95% 置信椭圆
+scale_fill_manual(values = c('red', 'blue'),   #椭圆分组颜色
+    limits = c('Pristine', 'Pollution'))  +
+  geom_point(data = pca_var,pch=5,cex=3,color = 'blue') +
+geom_text(data = pca_var, aes(x = Dim.1, y = Dim.2, label = label), color = 'blue', size = 6) +  #变量字体
+theme(panel.grid = element_blank(),  #背景、字体颜色等
+    panel.background = element_rect(color = 'black', fill = 'transparent'), 
+    legend.key = element_rect(fill = 'transparent'), 
+    legend.text = element_text(color = 'black'),
+    axis.text = element_text(color = 'black'), 
+    axis.ticks = element_line(color = 'black'), 
+    axis.title = element_text(color = 'black'), 
+    plot.title = element_text(hjust = 0.5)) +
+labs(title = 'PC score', x = paste('PCA1 (', pca_eig1, '% )'), #PC 轴贡献度
+    y = paste('PCA2 (', pca_eig2, '% )'), color = 'Group') + 
+geom_vline(xintercept = 0, color = 'black', size = 0.5, linetype = 2) + #0，0刻度线
+geom_hline(yintercept = 0, color = 'black', size = 0.5, linetype = 2)
+
+p
+
+p <- ggplot(data = pca_sample, aes(x = Dim.1, y = Dim.2)) +
+  geom_point(aes(color = group), size = 3) +  #添加样本点
+  scale_color_manual(values = c('red', 'blue'),  #点的分组颜色
+                     limits = c('Pristine', 'Pollution')) + 
+  stat_ellipse(aes(fill = group), geom = 'polygon', level = 0.95, alpha = 0.1, show.legend = FALSE) +  #添加 95% 置信椭圆
+  scale_fill_manual(values = c('#3D4391', '#72D741'),   #椭圆分组颜色
+                    limits = c('Pristine', 'Pollution'))  +
+  geom_segment(data = pca_var, aes(x = 0, y = 0, xend = Dim.1*6, yend = Dim.2*6), #添加变量箭头
+               arrow = arrow(length = unit(0.1, 'cm')), color = 'blue', size = 0.3) +
+  geom_text(data = pca_var, aes(x = Dim.1*6.5, y = Dim.2*6.5, label = label), color = 'blue', size = 3) +  #变量字体
+  theme(panel.grid = element_blank(),  #背景、字体颜色等
+        panel.background = element_rect(color = 'black', fill = 'transparent'), 
+        legend.key = element_rect(fill = 'transparent'), 
+        legend.text = element_text(color = 'black'),
+        axis.text = element_text(color = 'black'), 
+        axis.ticks = element_line(color = 'black'), 
+        axis.title = element_text(color = 'black'), 
+        plot.title = element_text(hjust = 0.5)) +
+  labs(title = 'PC score', x = paste('PCA1 (', pca_eig1, '% )'), #PC 轴贡献度
+       y = paste('PCA2 (', pca_eig2, '% )'), color = 'Group') + 
+  geom_vline(xintercept = 0, color = 'black', size = 0.5, linetype = 2) + #0，0刻度线
+  geom_hline(yintercept = 0, color = 'black', size = 0.5, linetype = 2)
+
+
+
+
+
+#热图
+library(pheatmap)
+dat <- read.delim('1.txt', row.names = 1, sep = '\t', check.names = FALSE)
+group <- read.delim('2.txt', row.names = 1, sep = '\t', check.names = FALSE)
+pheatmap(dat)
+pheatmap(dat,cluster_row = FALSE, treeheight_row = 50)
+pheatmap(dat,cluster_row = FALSE, treeheight_row = 50,color=colorRampPalette(c("blue","green","yellow","red"))(1000))
+annotation_rows = data.frame(group)
+pheatmap(dat,cluster_row = FALSE,annotation_col = annotation_rows, treeheight_row = 50,color=colorRampPalette(c("blue","green1","green","yellow","red"))(1000))
+pheatmap(dat,cutree_cols=3,annotation_col = annotation_rows, treeheight_row = 50,color=colorRampPalette(c("blue","green1","green","yellow","red"))(1000))
+
+#气泡图
+library(ggplot2)
+library(ggpubr)
+windowsFonts(myFont = windowsFont("Times new Roman"))
+inputFile="bubble-PAB-FLB.txt"
+rt=read.table(inputFile,header=T,sep="\t",check.names=F,row.names=1)
+ggballoonplot(rt, fill = 'value')+gradient_fill(c('white','blue'))
+
+
